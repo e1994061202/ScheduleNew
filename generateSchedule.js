@@ -1,94 +1,27 @@
+// 全局常量
+const MAX_CONSECUTIVE_WORK_DAYS = 6;
 // 全局變量
-let dayShiftCount, eveningShiftCount, nightShiftCount;
 let daysInMonth;
-const POPULATION_SIZE = 50;
-const MAX_GENERATIONS = 1000;  // 增加到 300
-const CROSSOVER_RATE = 0.8;
-const MUTATION_RATE = 0.02;  // 稍微增加變異率
-const ELITISM_COUNT = 2;
+let dayShiftCount, eveningShiftCount, nightShiftCount;
+// 主要排班函數
+function createSchedule() {
+    let schedule = initializeEmptySchedule();
+    let staffWorkDays = initializeStaffWorkDays();
 
-function generateSchedule() {
-    // 獲取用戶選擇的年份和月份
-    const year = parseInt(document.getElementById("year").value);
-    const month = parseInt(document.getElementById("month").value);
-    daysInMonth = new Date(year, month, 0).getDate();
-  
-    // 獲取各班次所需人數
-    dayShiftCount = parseInt(document.getElementById("dayShiftCount").value);
-    eveningShiftCount = parseInt(document.getElementById("eveningShiftCount").value); 
-    nightShiftCount = parseInt(document.getElementById("nightShiftCount").value);
-  
-    // 初始化種群
-    let population = [];
-    for (let i = 0; i < POPULATION_SIZE; i++) {
-        population.push(createRandomSchedule());
-    }
-  
-    // 運行遺傳算法
-    let bestSchedule = null;
-    let bestFitness = -Infinity;
-  
-    for (let generation = 0; generation < MAX_GENERATIONS; generation++) {
-        console.log(`第 ${generation} 代`);
-  
-        // 評估種群中每個排班表的適應度
-        let fitnessValues = population.map(evaluateScheduleFitness);
-      
-        // 檢查是否有新的最佳解  
-        let bestIndex = fitnessValues.indexOf(Math.max(...fitnessValues));
-        if (fitnessValues[bestIndex] > bestFitness) {
-            bestSchedule = population[bestIndex];
-            bestFitness = fitnessValues[bestIndex]; 
-            console.log(`新的最佳適應度: ${bestFitness}`);
-        }
-  
-        // 提前終止條件：如果找到幾乎完美的排班表，就提前結束
-        if (bestFitness >= 24990) {  // 可根據需要調整此閾值
-            console.log("找到完美排班表，提前終止。");
-            break;
-        }
-  
-        // 選擇父代進行繁殖
-        let parents = selectParents(population, fitnessValues);
-  
-        // 創建新一代種群
-        let newPopulation = [];
-  
-        // 精英策略：保留最佳解
-        for (let i = 0; i < ELITISM_COUNT; i++) {
-            if (bestSchedule) {
-                newPopulation.push(bestSchedule);
-            }
-        }
-  
-        // 通過交叉和變異生成新的排班表
-        while (newPopulation.length < POPULATION_SIZE) {
-            if (Math.random() < CROSSOVER_RATE) {
-                // 執行交叉操作
-                let [parent1, parent2] = getParentsFromSelected(parents);
-                let [child1, child2] = crossover(parent1, parent2);
-                newPopulation.push(child1, child2);
-            } else {
-                // 執行變異操作
-                let parent = getRandomFromSelected(parents);
-                let child = mutate(parent);  
-                newPopulation.push(child);
-            }
-        }
-  
-        // 用新一代取代舊一代
-        population = newPopulation;
-    }
-  
-    console.log('最佳排班表:', bestSchedule);
-    console.log('最佳適應度:', bestFitness);
-    
-    // 顯示最終的排班結果
-    displaySchedule(bestSchedule, year, month);
-    displayStatistics(bestSchedule);
-    displayScheduleMatrix(bestSchedule, year, month);
+    // 步驟1: 安排預排班
+    schedulePrescheduledShifts(schedule, staffWorkDays);
+
+    // 步驟2: 為每個員工安排不超過6天的連續工作日
+    scheduleConsecutiveWorkDays(schedule, staffWorkDays);
+
+    // 步驟3: 填補剩餘的班次
+    fillRemainingShifts(schedule, staffWorkDays);
+
+    return schedule;
 }
-function createRandomSchedule() {
+
+// 初始化空的排班表
+function initializeEmptySchedule() {
     let schedule = {};
     for (let day = 1; day <= daysInMonth; day++) {
         schedule[day] = {
@@ -97,505 +30,166 @@ function createRandomSchedule() {
             [SHIFTS.NIGHT]: []
         };
     }
+    return schedule;
+}
 
+// 初始化員工工作日數據
+function initializeStaffWorkDays() {
+    return staffList.reduce((acc, staff) => {
+        acc[staff.name] = {
+            workDays: [],
+            consecutiveCount: staff.previousMonthSchedules ? staff.previousMonthSchedules.filter(Boolean).length : 0,
+            lastShift: staff.lastMonthLastDayShift || null
+        };
+        return acc;
+    }, {});
+}
+
+// 安排預排班
+function schedulePrescheduledShifts(schedule, staffWorkDays) {
     staffList.forEach(staff => {
-        // 調整預期排班數，考慮預休天數
-        staff.expectedShiftDays = Math.floor((daysInMonth * (dayShiftCount + eveningShiftCount + nightShiftCount)) / staffList.length);
-        staff.actualShiftDays = 0;
-        staff.consecutiveWorkDays = staff.previousMonthSchedules ? staff.previousMonthSchedules.length : 0;
+        staff.prescheduledDates.forEach(prescheduled => {
+            schedule[prescheduled.date][prescheduled.shift].push(staff.name);
+            staffWorkDays[staff.name].workDays.push(prescheduled.date);
+            staffWorkDays[staff.name].lastShift = prescheduled.shift;
+            updateConsecutiveCount(staffWorkDays[staff.name], prescheduled.date);
+        });
     });
+}
 
-    // 先安排預排班
-    schedulePrescheduledShifts(schedule);
-
-    // 依預休天數來分配剩餘的班次
+// 更新連續工作天數
+function updateConsecutiveCount(staffWorkDay, currentDay) {
+    if (staffWorkDay.workDays.includes(currentDay - 1)) {
+        staffWorkDay.consecutiveCount++;
+    } else {
+        staffWorkDay.consecutiveCount = 1;
+    }
+}
+// 為每個員工安排不超過6天的連續工作日
+function scheduleConsecutiveWorkDays(schedule, staffWorkDays) {
     staffList.forEach(staff => {
-        for (let day of staff.preVacationDates) {
-            let remainingShifts = {
-                [SHIFTS.DAY]: dayShiftCount - schedule[day][SHIFTS.DAY].length,
-                [SHIFTS.EVENING]: eveningShiftCount - schedule[day][SHIFTS.EVENING].length,
-                [SHIFTS.NIGHT]: nightShiftCount - schedule[day][SHIFTS.NIGHT].length
-            };
+        let consecutiveDays = 0;
+        let lastWorkDay = 0;
 
-            // 對預休天數進行排班
-            let shifts = [staff.shift1, staff.shift2].filter(shift => shift !== "");
-            shuffleArray(shifts);
-            for (let shift of shifts) {
-                if (remainingShifts[shift] > 0) {
+        for (let day = 1; day <= daysInMonth; day++) {
+            if (staffWorkDays[staff.name].workDays.includes(day)) {
+                consecutiveDays++;
+                lastWorkDay = day;
+            } else if (consecutiveDays > 0 && consecutiveDays < MAX_CONSECUTIVE_WORK_DAYS && day - lastWorkDay === 1) {
+                let result = canWorkShift(staff, day, null, schedule, staffWorkDays);
+                if (result.canWork) {
+                    let shift = selectAppropriateShift(staff, day, staffWorkDays[staff.name].lastShift);
                     schedule[day][shift].push(staff.name);
-                    staff.actualShiftDays++;
-                    remainingShifts[shift]--;
+                    staffWorkDays[staff.name].workDays.push(day);
+                    staffWorkDays[staff.name].lastShift = shift;
+                    consecutiveDays++;
+                    lastWorkDay = day;
+                } else {
+                    consecutiveDays = 0;
+                }
+            } else {
+                consecutiveDays = 0;
+            }
+
+            if (consecutiveDays >= MAX_CONSECUTIVE_WORK_DAYS) {
+                consecutiveDays = 0;
+            }
+        }
+    });
+}
+
+// 填補剩餘的班次
+function fillRemainingShifts(schedule, staffWorkDays) {
+    for (let day = 1; day <= daysInMonth; day++) {
+        for (let shift in SHIFTS) {
+            while (schedule[day][shift].length < getShiftCount(shift)) {
+                let availableStaff = staffList.filter(staff => {
+                    let result = canWorkShift(staff, day, shift, schedule, staffWorkDays);
+                    return result.canWork && !staffWorkDays[staff.name].workDays.includes(day);
+                });
+
+                // 優先選擇偏好該班次的員工
+                let preferredStaff = availableStaff.filter(staff => 
+                    canWorkShift(staff, day, shift, schedule, staffWorkDays).isPreferredShift
+                );
+
+                if (preferredStaff.length > 0) {
+                    availableStaff = preferredStaff;
+                }
+
+                // 根據當前工作天數排序，優先選擇工作天數較少的員工
+                availableStaff.sort((a, b) => 
+                    staffWorkDays[a.name].workDays.length - staffWorkDays[b.name].workDays.length
+                );
+
+                if (availableStaff.length > 0) {
+                    let selectedStaff = availableStaff[0];
+                    schedule[day][shift].push(selectedStaff.name);
+                    staffWorkDays[selectedStaff.name].workDays.push(day);
+                    staffWorkDays[selectedStaff.name].lastShift = shift;
+                } else {
+                    console.warn(`無法為 ${day} 日的 ${shift} 班次找到可用員工，嘗試調整限制條件`);
+                    // 在這裡可以添加邏輯來調整限制條件，比如臨時允許超出連續工作天數限制
                     break;
                 }
             }
         }
-    });
-
-    // 填補剩餘班次
-    for (let day = 1; day <= daysInMonth; day++) {
-        // 跳過已經安排了預休的日子
-        if (staffList.some(staff => staff.preVacationDates.includes(day))) {
-            continue;
-        }
-
-        let remainingShifts = {
-            [SHIFTS.DAY]: dayShiftCount - schedule[day][SHIFTS.DAY].length,
-            [SHIFTS.EVENING]: eveningShiftCount - schedule[day][SHIFTS.EVENING].length,
-            [SHIFTS.NIGHT]: nightShiftCount - schedule[day][SHIFTS.NIGHT].length
-        };
-
-        let availableStaff = getAvailableStaff(day, schedule);
-        // 優先考慮排班數較少的人員
-        availableStaff.sort((a, b) => (a.actualShiftDays / a.expectedShiftDays) - (b.actualShiftDays / b.expectedShiftDays));
-
-        availableStaff.forEach(staff => {
-            let shifts = [staff.shift1, staff.shift2].filter(shift => shift !== "");
-            shuffleArray(shifts);
-            for (let shift of shifts) {
-                if (remainingShifts[shift] > 0 && staff.actualShiftDays < staff.expectedShiftDays) {
-                    if (isStaffAvailableForShift(staff, day, shift, schedule)) {
-                        schedule[day][shift].push(staff.name);
-                        staff.actualShiftDays++;
-                        remainingShifts[shift]--;
-                        staff.consecutiveWorkDays++;
-                        break;
-                    }
-                }
-            }
-        });
-
-        // 更新沒有排班的員工的連續工作天數
-        staffList.forEach(staff => {
-            if (!isStaffScheduledOnDay(schedule, staff.name, day)) {
-                staff.consecutiveWorkDays = 0;
-            }
-        });
     }
-
-    return schedule;
-}
-function evaluateScheduleFitness(schedule) {
-    let fitness = 0;
-
-    // 規則 1：所有班次都必須被填滿
-    let allShiftsFilled = true;
-    for (let day = 1; day <= daysInMonth; day++) {
-        if (schedule[day][SHIFTS.DAY].length < dayShiftCount ||
-            schedule[day][SHIFTS.EVENING].length < eveningShiftCount ||
-            schedule[day][SHIFTS.NIGHT].length < nightShiftCount) {
-            allShiftsFilled = false;
-            fitness -= 1000;  // 對未填滿的班次給予嚴重懲罰
-        }    
-    }
-    fitness += allShiftsFilled ? 10000 : 0;  // 如果所有班次都填滿，給予高獎勵
-
-    // 規則 2：尊重預排班
-    let prescheduledRespected = true;
-    staffList.forEach(staff => {
-        staff.prescheduledDates.forEach(preschedule => {
-            let shiftStaff = schedule[preschedule.date][preschedule.shift];
-            if (!shiftStaff.includes(staff.name)) {
-                prescheduledRespected = false;
-                fitness -= 500;  // 對不尊重預排班的情況給予嚴重懲罰
-            }
-        });  
-    });
-    fitness += prescheduledRespected ? 5000 : 0;  // 如果所有預排班都被尊重，給予高獎勵
-
-    // 規則 3：實際排班數 >= 預期排班數（更精確的計算）
-    let totalShiftDeficit = 0;
-    staffList.forEach(staff => {
-        const shiftDeficit = staff.expectedShiftDays - staff.actualShiftDays;
-        if (shiftDeficit > 0) {
-            totalShiftDeficit += shiftDeficit;
-            fitness -= shiftDeficit * 100;  // 對每個缺少的班次給予懲罰
-        }
-    });
-    fitness += totalShiftDeficit === 0 ? 10000 : 0;  // 如果沒有缺少的班次，給予高獎勵
-
-    // 規則 4：尊重班次偏好
-    let shiftPreferenceViolations = 0;
-    staffList.forEach(staff => {
-        let staffShifts = new Set([staff.shift1, staff.shift2]);
-        for (let day = 1; day <= daysInMonth; day++) {
-            for (let shift in SHIFTS) {
-                if (schedule[day][shift].includes(staff.name) && !staffShifts.has(shift)) {
-                    shiftPreferenceViolations++;
-                }
-            }
-        }
-    });
-    fitness -= shiftPreferenceViolations * 50;  // 對每次違反班次偏好的情況給予懲罰
-
-    // 規則 5：避免單日排班
-    let singleDayShiftCount = 0;
-    staffList.forEach(staff => {
-        for (let day = 2; day < daysInMonth; day++) {
-            if (!isStaffScheduledOnDay(schedule, staff.name, day - 1) &&
-                isStaffScheduledOnDay(schedule, staff.name, day) &&
-                !isStaffScheduledOnDay(schedule, staff.name, day + 1)) {
-                singleDayShiftCount++;
-            }
-        }
-    });
-    fitness -= singleDayShiftCount * 20;  // 對每次單日排班的情況給予懲罰
-
-    // 規則 6：避免連續工作超過 6 天
-    let consecutiveShiftViolations = 0;
-    staffList.forEach(staff => {
-        if (staff.consecutiveWorkDays > 6) {
-            consecutiveShiftViolations += staff.consecutiveWorkDays - 6;
-        }
-    });
-    fitness -= consecutiveShiftViolations * 50;  // 對每次違反連續工作天數限制的情況給予懲罰
-
-    return fitness;  // 返回最終的適應度分數
 }
 
-function selectParents(population, fitnessValues) {
-    let parents = [];
-    for (let i = 0; i < POPULATION_SIZE; i++) {
-        let randomValue = Math.random() * fitnessValues.reduce((a, b) => a + b, 0);
-        let sum = 0;
-        for (let j = 0; j < POPULATION_SIZE; j++) {
-            sum += fitnessValues[j];
-            if (sum >= randomValue) {
-                parents.push(population[j]);
-                break;
-            }
+// 檢查員工是否可以在指定日期工作指定班次
+function canWorkShift(staff, day, shift, schedule, staffWorkDays) {
+    // 檢查是否違反連續工作天數限制
+    let consecutiveWorkDays = 0;
+    for (let i = day - 1; i > day - MAX_CONSECUTIVE_WORK_DAYS; i--) {
+        if (i < 1) break;
+        if (staffWorkDays[staff.name].workDays.includes(i)) {
+            consecutiveWorkDays++;
+        } else {
+            break;
         }
     }
-    return parents;
-}
+    if (consecutiveWorkDays >= MAX_CONSECUTIVE_WORK_DAYS - 1) return false;
 
-function getParentsFromSelected(selectedParents) {
-    let parent1 = selectedParents[Math.floor(Math.random() * selectedParents.length)];
-    let parent2 = selectedParents[Math.floor(Math.random() * selectedParents.length)];
-    return [parent1, parent2];
-}
+    // 檢查班次偏好（放寬限制，允許非偏好班次，但有較低優先級）
+    let isPreferredShift = (shift === staff.shift1 || shift === staff.shift2);
 
-function getRandomFromSelected(selectedParents) {
-    return selectedParents[Math.floor(Math.random() * selectedParents.length)];
-}
-
-function crossover(parent1, parent2) {
-    let child1 = JSON.parse(JSON.stringify(parent1)); 
-    let child2 = JSON.parse(JSON.stringify(parent2));
-
-    let crossoverPoint = Math.floor(Math.random() * daysInMonth) + 1;
-
-    for (let day = crossoverPoint; day <= daysInMonth; day++) {
-        [child1[day], child2[day]] = [child2[day], child1[day]];
+    // 檢查班次連續性
+    let prevDayShift = day > 1 ? getStaffShiftOnDay(schedule, staff.name, day - 1) : staff.lastMonthLastDayShift;
+    if (prevDayShift) {
+        if (prevDayShift === SHIFTS.NIGHT && (shift === SHIFTS.DAY || shift === SHIFTS.EVENING)) return false;
+        if (prevDayShift === SHIFTS.EVENING && shift === SHIFTS.DAY) return false;
     }
 
-    return [child1, child2];
+    return { canWork: true, isPreferredShift: isPreferredShift };
 }
 
-function mutate(schedule) {
-    let mutatedSchedule = JSON.parse(JSON.stringify(schedule));
-
-    for (let day = 1; day <= daysInMonth; day++) {
-        for (let shift in SHIFTS) {
-            if (Math.random() < MUTATION_RATE) {
-                let staffToReplace = Math.floor(Math.random() * mutatedSchedule[day][shift].length);
-                let replacementStaff = getStaffWithLeastShifts(day, shift, mutatedSchedule);
-                if (replacementStaff && !mutatedSchedule[day][shift].includes(replacementStaff.name)) {
-                    mutatedSchedule[day][shift][staffToReplace] = replacementStaff.name;
-                }
-            }
-        }
+// 選擇適當的班次
+function selectAppropriateShift(staff, day, lastShift) {
+    let possibleShifts = [staff.shift1, staff.shift2].filter(s => s);
+    if (lastShift === SHIFTS.NIGHT) {
+        possibleShifts = possibleShifts.filter(s => s === SHIFTS.NIGHT);
+    } else if (lastShift === SHIFTS.EVENING) {
+        possibleShifts = possibleShifts.filter(s => s !== SHIFTS.NIGHT);
     }
-
-    return mutatedSchedule;
+    return possibleShifts[Math.floor(Math.random() * possibleShifts.length)] || staff.shift1;
 }
 
-
-function createRandomSchedule() {
-    let schedule = {};
-    for (let day = 1; day <= daysInMonth; day++) {
-        schedule[day] = {
-            [SHIFTS.DAY]: [],  
-            [SHIFTS.EVENING]: [],
-            [SHIFTS.NIGHT]: [] 
-        };
+// 獲取指定班次所需的人數
+function getShiftCount(shift) {
+    switch(shift) {
+        case SHIFTS.DAY: return dayShiftCount;
+        case SHIFTS.EVENING: return eveningShiftCount;
+        case SHIFTS.NIGHT: return nightShiftCount;
+        default: return 0;
     }
-
-    staffList.forEach(staff => {
-    // 調整預期排班數，考慮預休天數
-    staff.expectedShiftDays = Math.floor((daysInMonth * (dayShiftCount + eveningShiftCount + nightShiftCount)) / staffList.length);
-    staff.actualShiftDays = 0;
-    staff.consecutiveWorkDays = staff.previousMonthSchedules ? staff.previousMonthSchedules.length : 0;
-    });
-
-    // 先安排預排班
-    schedulePrescheduledShifts(schedule);  
-
-    // 填補剩餘班次  
-    for (let day = 1; day <= daysInMonth; day++) {
-        let remainingShifts = {
-            [SHIFTS.DAY]: dayShiftCount - schedule[day][SHIFTS.DAY].length,
-            [SHIFTS.EVENING]: eveningShiftCount - schedule[day][SHIFTS.EVENING].length,  
-            [SHIFTS.NIGHT]: nightShiftCount - schedule[day][SHIFTS.NIGHT].length
-        };
-
-        let availableStaff = getAvailableStaff(day, schedule);
-        // 優先考慮排班數較少的人員
-        availableStaff.sort((a, b) => (a.actualShiftDays / a.expectedShiftDays) - (b.actualShiftDays / b.expectedShiftDays));
-
-        availableStaff.forEach(staff => {
-            let shifts = [staff.shift1, staff.shift2].filter(shift => shift !== "");
-            shuffleArray(shifts);
-            for (let shift of shifts) {
-                if (remainingShifts[shift] > 0 && staff.actualShiftDays < staff.expectedShiftDays) {
-                    if (isStaffAvailableForShift(staff, day, shift, schedule)) {
-                        schedule[day][shift].push(staff.name);
-                        staff.actualShiftDays++;
-                        remainingShifts[shift]--;
-                        staff.consecutiveWorkDays++;
-                        break;  
-                    }
-                }
-            }
-        });
-
-        // 更新沒有排班的員工的連續工作天數
-        staffList.forEach(staff => {
-            if (!isStaffScheduledOnDay(schedule, staff.name, day)) {
-                staff.consecutiveWorkDays = 0;
-            }
-        });
-    }
-
-    // 輸出排班結果
-    console.log('排班結果:');
-    staffList.forEach(staff => {
-        let prescheduledDates = staff.prescheduledDates.map(item => `${item.date}日(${SHIFT_DISPLAY[item.shift]})`).join(', ');
-        let preVacationDates = staff.preVacationDates.map(date => `${date}日`).join(', ');
-        let dailySchedule = [];
-        for (let day = 1; day <= daysInMonth; day++) {
-            let shift = getStaffShiftOnDay(schedule, staff.name, day);
-            if (shift) {
-                dailySchedule.push(`${day}日(${SHIFT_DISPLAY[shift]})`);
-            }
-        }
-        let totalShifts = staff.actualShiftDays;
-        console.log(`${staff.name}
-預排班日期: ${prescheduledDates}
-預休日期: ${preVacationDates}
-排班情況: ${dailySchedule.join(', ')}
-總班次: ${totalShifts}`);
-    });
-
-    return schedule;
 }
-
-function evaluateScheduleFitness(schedule) {
-    let fitness = 0;
-
-    // 規則 1：所有班次都必須被填滿
-    let allShiftsFilled = true;
-    for (let day = 1; day <= daysInMonth; day++) {
-        if (schedule[day][SHIFTS.DAY].length < dayShiftCount ||
-            schedule[day][SHIFTS.EVENING].length < eveningShiftCount ||
-            schedule[day][SHIFTS.NIGHT].length < nightShiftCount) {
-            allShiftsFilled = false;
-            fitness -= 1000;  // 對未填滿的班次給予嚴重懲罰
-        }    
-    }
-    fitness += allShiftsFilled ? 10000 : 0;  // 如果所有班次都填滿，給予高獎勵
-
-    // 規則 2：尊重預排班
-    let prescheduledRespected = true;
-    staffList.forEach(staff => {
-        staff.prescheduledDates.forEach(preschedule => {
-            let shiftStaff = schedule[preschedule.date][preschedule.shift];
-            if (!shiftStaff.includes(staff.name)) {
-                prescheduledRespected = false;
-                fitness -= 500;  // 對不尊重預排班的情況給予嚴重懲罰
-            }
-        });  
-    });
-    fitness += prescheduledRespected ? 5000 : 0;  // 如果所有預排班都被尊重，給予高獎勵
-
-    // 規則 3：實際排班數 >= 預期排班數（更精確的計算）
-    let totalShiftDeficit = 0;
-    staffList.forEach(staff => {
-        const shiftDeficit = staff.expectedShiftDays - staff.actualShiftDays;
-        if (shiftDeficit > 0) {
-            totalShiftDeficit += shiftDeficit;
-            fitness -= shiftDeficit * 100;  // 對每個缺少的班次給予懲罰
-        }
-    });
-    fitness += totalShiftDeficit === 0 ? 10000 : 0;  // 如果沒有缺少的班次，給予高獎勵
-
-    // 規則 4：尊重班次偏好
-    let shiftPreferenceViolations = 0;
-    staffList.forEach(staff => {
-        let staffShifts = new Set([staff.shift1, staff.shift2]);
-        for (let day = 1; day <= daysInMonth; day++) {
-            for (let shift in SHIFTS) {
-                if (schedule[day][shift].includes(staff.name) && !staffShifts.has(shift)) {
-                    shiftPreferenceViolations++;
-                }
-            }
-        }
-    });
-    fitness -= shiftPreferenceViolations * 50;  // 對每次違反班次偏好的情況給予懲罰
-
-    // 規則 5：避免單日排班
-    let singleDayShiftCount = 0;
-    staffList.forEach(staff => {
-        for (let day = 2; day < daysInMonth; day++) {
-            if (!isStaffScheduledOnDay(schedule, staff.name, day - 1) &&
-                isStaffScheduledOnDay(schedule, staff.name, day) &&
-                !isStaffScheduledOnDay(schedule, staff.name, day + 1)) {
-                singleDayShiftCount++;
-            }
-        }
-    });
-    fitness -= singleDayShiftCount * 20;  // 對每次單日排班的情況給予懲罰
-
-    // 規則 6：避免連續工作超過 6 天
-    let consecutiveShiftViolations = 0;
-    staffList.forEach(staff => {
-        if (staff.consecutiveWorkDays > 6) {
-            consecutiveShiftViolations += staff.consecutiveWorkDays - 6;
-        }
-    });
-    fitness -= consecutiveShiftViolations * 50;  // 對每次違反連續工作天數限制的情況給予懲罰
-
-    return fitness;  // 返回最終的適應度分數
-}
-
-function mutate(schedule) {
-    let mutatedSchedule = JSON.parse(JSON.stringify(schedule));
-
-    for (let day = 1; day <= daysInMonth; day++) {
-        if (Math.random() < MUTATION_RATE) {
-            let shift = getRandomShift();
-            let staffToReplace = Math.floor(Math.random() * mutatedSchedule[day][shift].length);
-            
-            // 優先選擇排班數較少的人員進行替換
-            let replacementStaff = getRandomAvailableStaffWithLeastShifts(day, shift, mutatedSchedule);
-            if (replacementStaff) {
-                mutatedSchedule[day][shift][staffToReplace] = replacementStaff.name;
-            }
-        }  
-    }
-
-    return mutatedSchedule;
-}
-
-function getRandomAvailableStaffWithLeastShifts(day, shift, schedule) {
-    let availableStaff = getAvailableStaff(day, schedule);
-    availableStaff = availableStaff.filter(staff => isStaffAvailableForShift(staff, day, shift, schedule));
-    if (availableStaff.length > 0) {
-        // 選擇實際排班數與預期排班數比例最小的人員
-        return availableStaff.reduce((min, staff) => 
-            (staff.actualShiftDays / staff.expectedShiftDays < min.actualShiftDays / min.expectedShiftDays) ? staff : min
-        );
-    }
-    return null;
-}
-
-// ... (rest of the code remains the same)
-function getRandomShift() {
-    let shifts = [SHIFTS.DAY, SHIFTS.EVENING, SHIFTS.NIGHT];
-    return shifts[Math.floor(Math.random() * shifts.length)];
-}
-
-function getRandomAvailableStaff(day, shift, schedule) {
-    let availableStaff = getAvailableStaff(day, schedule);
-    availableStaff = availableStaff.filter(staff => isStaffAvailableForShift(staff, day, shift, schedule));
-    if (availableStaff.length > 0) {
-        return availableStaff[Math.floor(Math.random() * availableStaff.length)];
-    }
-    return null;
-}
-
-function shuffleArray(array) {
-    return array.sort(() => 0.5 - Math.random());
-}
-
-function isStaffAvailableForShift(staff, day, shift, schedule) {
-    if (isStaffScheduledOnDay(schedule, staff.name, day)) {
-        return false;
-    }
-
-    if (staff.preVacationDates.includes(day)) {
-        return false;
-    }
-
-    if (shift !== staff.shift1 && shift !== staff.shift2) {
-        return false;
-    }
-
-    // 檢查連續工作天數，包括上個月的情況
-    if (staff.consecutiveWorkDays >= 6) {
-        return false;
-    }
-
-    // 第一天的特殊處理
-    if (day === 1) {
-        if (staff.lastMonthLastDayShift) {
-            // 確保第一天的班次與上月最後一天相同
-            if (shift !== staff.lastMonthLastDayShift) {
-                return false;
-            }
-            // 如果上個月最後六天已經連續工作了6天，第一天就不該再排班
-            if (staff.previousMonthSchedules && staff.previousMonthSchedules.length >= 6) {
-                return false;
-            }
-        }
-    } else {
-        let prevDay = day - 1;
-        let prevDayShift = getStaffShiftOnDay(schedule, staff.name, prevDay);
-        if ((prevDayShift === SHIFTS.EVENING && shift === SHIFTS.DAY) ||
-            (prevDayShift === SHIFTS.NIGHT && (shift === SHIFTS.DAY || shift === SHIFTS.EVENING))) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-function getStaffWithLeastShifts(day, shift, schedule) {
-    let availableStaff = getAvailableStaff(day, schedule);
-    availableStaff = availableStaff.filter(staff => 
-        (staff.shift1 === shift || staff.shift2 === shift) &&
-        isStaffAvailableForShift(staff, day, shift, schedule)
-    );
-    
-    if (availableStaff.length > 0) {
-        return availableStaff.reduce((min, staff) => 
-            (staff.actualShiftDays / staff.expectedShiftDays < min.actualShiftDays / min.expectedShiftDays) ? staff : min
-        );
-    }
-    return null;
-}
+// 檢查員工是否在指定日期被排班
 function isStaffScheduledOnDay(schedule, staffName, day) {
     return Object.values(schedule[day]).some(shift => shift.includes(staffName));
 }
 
-function getAvailableStaff(day, schedule) {
-    return staffList.filter(staff =>
-        !isStaffScheduledOnDay(schedule, staff.name, day) &&
-        !staff.preVacationDates.includes(day)
-    );
-}
-
-function schedulePrescheduledShifts(schedule) {
-    staffList.forEach(staff => {
-        staff.prescheduledDates.forEach(prescheduled => {
-            let { date, shift } = prescheduled;
-            if (!schedule[date][shift].includes(staff.name)) {
-                schedule[date][shift].push(staff.name);
-                staff.actualShiftDays++;
-            }
-        });
-    });
-}
-
+// 獲取員工在指定日期的班次
 function getStaffShiftOnDay(schedule, staffName, day) {
     for (let shift in schedule[day]) {
         if (schedule[day][shift].includes(staffName)) {
@@ -605,15 +199,202 @@ function getStaffShiftOnDay(schedule, staffName, day) {
     return null;
 }
 
-function getShiftCount(shift) {
-    switch(shift) {
-        case SHIFTS.DAY: return dayShiftCount;
-        case SHIFTS.EVENING: return eveningShiftCount;
-        case SHIFTS.NIGHT: return nightShiftCount;
-        default: return 0;
+// 評估排班表
+function evaluateSchedule(schedule) {
+    let score = 0;
+    let violations = {
+        shiftUnderStaffed: 0,
+        consecutiveDaysViolation: 0,
+        shiftPreferenceViolation: 0,
+        shiftContinuityViolation: 0
+    };
+
+    // 檢查每個班次是否都有足夠的人員
+    for (let day = 1; day <= daysInMonth; day++) {
+        for (let shift in SHIFTS) {
+            let staffCount = schedule[day][shift].length;
+            let requiredCount = getShiftCount(shift);
+            if (staffCount < requiredCount) {
+                violations.shiftUnderStaffed += requiredCount - staffCount;
+            }
+        }
     }
+
+    // 檢查連續工作天數和班次偏好
+    staffList.forEach(staff => {
+        let consecutiveDays = 0;
+        let lastShift = staff.lastMonthLastDayShift;
+
+        for (let day = 1; day <= daysInMonth; day++) {
+            let currentShift = getStaffShiftOnDay(schedule, staff.name, day);
+            
+            if (currentShift) {
+                consecutiveDays++;
+                
+                // 檢查班次偏好
+                if (currentShift !== staff.shift1 && currentShift !== staff.shift2) {
+                    violations.shiftPreferenceViolation++;
+                }
+
+                // 檢查班次連續性
+                if (lastShift) {
+                    if ((lastShift === SHIFTS.NIGHT && (currentShift === SHIFTS.DAY || currentShift === SHIFTS.EVENING)) ||
+                        (lastShift === SHIFTS.EVENING && currentShift === SHIFTS.NIGHT)) {
+                        violations.shiftContinuityViolation++;
+                    }
+                }
+
+                lastShift = currentShift;
+            } else {
+                if (consecutiveDays > MAX_CONSECUTIVE_WORK_DAYS) {
+                    violations.consecutiveDaysViolation += consecutiveDays - MAX_CONSECUTIVE_WORK_DAYS;
+                }
+                consecutiveDays = 0;
+            }
+        }
+
+        // 檢查月底的連續工作天數
+        if (consecutiveDays > MAX_CONSECUTIVE_WORK_DAYS) {
+            violations.consecutiveDaysViolation += consecutiveDays - MAX_CONSECUTIVE_WORK_DAYS;
+        }
+    });
+
+    // 計算總分
+    score -= violations.shiftUnderStaffed * 1000;
+    score -= violations.consecutiveDaysViolation * 10000;
+    score -= violations.shiftPreferenceViolation * 100;
+    score -= violations.shiftContinuityViolation * 500;
+
+    return { score, violations };
 }
 
+// 打印排班統計
+function printScheduleStatistics(schedule) {
+    console.log("排班統計：");
+    staffList.forEach(staff => {
+        let dayShifts = 0, eveningShifts = 0, nightShifts = 0;
+        let workDays = 0;
+        let maxConsecutiveDays = 0;
+        let currentConsecutiveDays = 0;
+
+        for (let day = 1; day <= daysInMonth; day++) {
+            let shift = getStaffShiftOnDay(schedule, staff.name, day);
+            if (shift) {
+                workDays++;
+                currentConsecutiveDays++;
+                if (currentConsecutiveDays > maxConsecutiveDays) {
+                    maxConsecutiveDays = currentConsecutiveDays;
+                }
+                switch (shift) {
+                    case SHIFTS.DAY: dayShifts++; break;
+                    case SHIFTS.EVENING: eveningShifts++; break;
+                    case SHIFTS.NIGHT: nightShifts++; break;
+                }
+            } else {
+                currentConsecutiveDays = 0;
+            }
+        }
+
+        console.log(`${staff.name}:`);
+        console.log(`  總工作天數: ${workDays}`);
+        console.log(`  白班: ${dayShifts}, 小夜: ${eveningShifts}, 大夜: ${nightShifts}`);
+        console.log(`  最長連續工作天數: ${maxConsecutiveDays}`);
+    });
+}
+
+
+
+// 初始化函數
+function initializeSchedulingSystem(year, month) {
+    daysInMonth = new Date(year, month, 0).getDate();
+    dayShiftCount = parseInt(document.getElementById("dayShiftCount").value);
+    eveningShiftCount = parseInt(document.getElementById("eveningShiftCount").value);
+    nightShiftCount = parseInt(document.getElementById("nightShiftCount").value);
+}
+
+// 主要排班流程
+function generateSchedule() {
+    const year = parseInt(document.getElementById("year").value);
+    const month = parseInt(document.getElementById("month").value);
+    
+    initializeSchedulingSystem(year, month);
+    
+    console.log("開始生成排班表...");
+    const schedule = createSchedule();
+    console.log("排班表生成完成。");
+    
+    const evaluation = evaluateSchedule(schedule);
+    console.log("排班表評估結果:", evaluation);
+    
+    printScheduleStatistics(schedule);
+    
+    displaySchedule(schedule, year, month);
+    displayScheduleMatrix(schedule, year, month);
+    displayStatistics(schedule);
+}
+
+function displayStatistics(schedule) {
+    const statisticsTable = document.getElementById('statisticsTable');
+    
+    let tableHTML = `
+        <table class="statistics-table">
+            <thead>
+                <tr>
+                    <th>員工名稱</th>
+                    <th>總工作天數</th>
+                    <th>白班天數</th>
+                    <th>小夜天數</th>
+                    <th>大夜天數</th>
+                    <th>最長連續工作天數</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    staffList.forEach(staff => {
+        let dayShifts = 0, eveningShifts = 0, nightShifts = 0;
+        let workDays = 0;
+        let maxConsecutiveDays = 0;
+        let currentConsecutiveDays = 0;
+
+        for (let day = 1; day <= daysInMonth; day++) {
+            let shift = getStaffShiftOnDay(schedule, staff.name, day);
+            if (shift) {
+                workDays++;
+                currentConsecutiveDays++;
+                if (currentConsecutiveDays > maxConsecutiveDays) {
+                    maxConsecutiveDays = currentConsecutiveDays;
+                }
+                switch (shift) {
+                    case SHIFTS.DAY: dayShifts++; break;
+                    case SHIFTS.EVENING: eveningShifts++; break;
+                    case SHIFTS.NIGHT: nightShifts++; break;
+                }
+            } else {
+                currentConsecutiveDays = 0;
+            }
+        }
+
+        tableHTML += `
+            <tr>
+                <td>${staff.name}</td>
+                <td>${workDays}</td>
+                <td>${dayShifts}</td>
+                <td>${eveningShifts}</td>
+                <td>${nightShifts}</td>
+                <td>${maxConsecutiveDays}</td>
+            </tr>
+        `;
+    });
+
+    tableHTML += `
+            </tbody>
+        </table>
+    `;
+
+    statisticsTable.innerHTML = tableHTML;
+}
+// 顯示排班表
 function displaySchedule(schedule, year, month) {
     const scheduleTable = document.getElementById('scheduleTable');
     const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
@@ -655,66 +436,7 @@ function displaySchedule(schedule, year, month) {
     scheduleTable.innerHTML = tableHTML;
 }
 
-function displayStatistics(schedule) {
-    const statisticsTable = document.getElementById('statisticsTable');
-    
-    let tableHTML = `
-        <table class="statistics-table">
-            <thead>
-                <tr>
-                    <th>員工名稱</th>
-                    <th>預期班數</th>
-                    <th>實際班數</th>
-                    <th>白班天數</th>
-                    <th>小夜天數</th>
-                    <th>大夜天數</th>
-                </tr>
-            </thead>
-            <tbody>
-    `;
-
-    staffList.forEach(staff => {
-        const expectedDays = staff.expectedShiftDays;
-        let actualDays = 0;
-        let dayShiftDays = 0;
-        let eveningShiftDays = 0;
-        let nightShiftDays = 0;
-
-        for (let day = 1; day <= daysInMonth; day++) {
-            if (schedule[day][SHIFTS.DAY].includes(staff.name)) {
-                dayShiftDays++;
-                actualDays++;
-            }
-            if (schedule[day][SHIFTS.EVENING].includes(staff.name)) {
-                eveningShiftDays++;
-                actualDays++;
-            }
-            if (schedule[day][SHIFTS.NIGHT].includes(staff.name)) {
-                nightShiftDays++;
-                actualDays++;
-            }
-        }
-
-        tableHTML += `
-            <tr>
-                <td>${staff.name}</td>
-                <td>${expectedDays}</td>
-                <td>${actualDays}</td>
-                <td>${dayShiftDays}</td>
-                <td>${eveningShiftDays}</td>
-                <td>${nightShiftDays}</td>
-            </tr>
-        `;
-    });
-
-    tableHTML += `
-            </tbody>
-        </table>
-    `;
-
-    statisticsTable.innerHTML = tableHTML;
-}
-
+// 顯示排班矩陣
 function displayScheduleMatrix(schedule, year, month) {
     const scheduleMatrixDiv = document.getElementById('scheduleMatrix');
     const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
@@ -723,7 +445,7 @@ function displayScheduleMatrix(schedule, year, month) {
         <table class="schedule-matrix">
             <thead>
                 <tr>
-                    <th>人員 \ 日期</th>
+                    <th>人員 \\ 日期</th>
     `;
     
     for (let day = 1; day <= daysInMonth; day++) {
@@ -769,6 +491,7 @@ function displayScheduleMatrix(schedule, year, month) {
     scheduleMatrixDiv.innerHTML = tableHTML;
 }
 
+// 事件監聽器設置
 document.addEventListener('DOMContentLoaded', function() {
     let generateBtn = document.getElementById('generateScheduleBtn');
     generateBtn.addEventListener('click', generateSchedule);
